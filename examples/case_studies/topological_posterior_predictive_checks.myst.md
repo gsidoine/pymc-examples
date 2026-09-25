@@ -26,6 +26,8 @@ Posterior predictive checks are a central part of Bayesian workflow: after fitti
 
 This notebook demonstrates a complementary diagnostic: **topological posterior predictive checks**. The idea is to use persistent-homology summaries as posterior predictive discrepancy statistics. These summaries can detect global shape features, such as connected components and loops, that ordinary low-order summaries can miss. Persistent homology summarizes the birth and death of topological features across scales {cite:p}`edelsbrunner2010computational,ghrist2008barcodes`.
 
+This synthetic example is intentionally chosen for visual transparency. Its missing seasonality could also be detected with simpler diagnostics, such as autocorrelation or a Fourier spectrum. Persistent homology is therefore not essential for this particular problem; we use it to illustrate how a custom geometric discrepancy can be incorporated into posterior predictive model criticism. Topological checks are most useful when the scientifically relevant mismatch is genuinely geometric or topological, or is difficult to express with simpler domain-specific summaries.
+
 We use a realistic synthetic example: a noisy seasonal time series. In the raw time domain the data is one-dimensional, but its delay-coordinate embedding has a recurrent loop. We fit two PyMC models:
 
 1. A misspecified Gaussian model on the delay embedding. It can match means and covariance but cannot reproduce the recurrent loop.
@@ -90,7 +92,7 @@ warnings.filterwarnings(
 colab:
   base_uri: https://localhost:8080/
 id: preamble
-outputId: db3320df-7883-44a2-fff9-517956ee9a67
+outputId: 07e82968-f38f-4e3c-a326-9797c1acc100
 ---
 RANDOM_SEED = 20260520
 rng = np.random.default_rng(RANDOM_SEED)
@@ -119,7 +121,7 @@ colab:
   base_uri: https://localhost:8080/
   height: 407
 id: 279bc51d
-outputId: f0b21d28-885b-49dd-da57-fd842e6ca119
+outputId: fdc78f39-d8ff-49ed-faed-4249a5b0db82
 ---
 # Visual intuition: H0 sees connected components; H1 sees loops.
 theta = np.linspace(0.0, 2.0 * np.pi, 160, endpoint=False)
@@ -158,7 +160,7 @@ colab:
   base_uri: https://localhost:8080/
   height: 407
 id: ee9ceb5e
-outputId: 29005eb8-342b-438c-c244-1d6020818e2b
+outputId: f7e4ae39-26ef-4ebc-8201-72012b76bbc5
 ---
 def make_seasonal_timeseries(
     n_time: int = 300,
@@ -215,11 +217,19 @@ observed_series = make_seasonal_timeseries(
 )
 observed_embedding = delay_embedding(observed_series, lag=LAG, dim=DELAY_DIM)
 
+# Use common limits so observed and posterior-predictive panels are directly comparable.
+plot_abs_limit = 1.5 * float(np.max(np.abs(observed_series)))
+PLOT_Y_LIM = (-plot_abs_limit, plot_abs_limit)
+
 fig, axes = plt.subplots(1, 2, figsize=(11, 4))
 axes[0].plot(observed_series, lw=1.5)
 axes[0].set(title="Observed seasonal time series", xlabel="time", ylabel="y")
+axes[0].set_xlim(0, N_TIME - 1)
+axes[0].set_ylim(*PLOT_Y_LIM)
 axes[1].scatter(observed_embedding[:, 0], observed_embedding[:, 1], s=16, alpha=0.8)
 axes[1].set(title="Delay-coordinate embedding", xlabel="$y_t$", ylabel=f"$y_{{t-{LAG}}}$")
+axes[1].set_xlim(*PLOT_Y_LIM)
+axes[1].set_ylim(*PLOT_Y_LIM)
 axes[1].set_aspect("equal", adjustable="box")
 plt.tight_layout()
 ```
@@ -442,6 +452,38 @@ def run_topoppc(
 ```{code-cell} ipython3
 :id: 19c70b59
 
+def plot_series_and_embedding(
+    series: np.ndarray,
+    embedding: np.ndarray,
+    *,
+    series_title: str,
+    embedding_title: str,
+    time_index: np.ndarray | None = None,
+) -> None:
+    """Plot a time-domain trace and delay embedding on the observed-data axes."""
+    series = np.asarray(series, dtype=float)
+    embedding = np.asarray(embedding, dtype=float)
+    if time_index is None:
+        time_index = np.arange(series.size)
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+    axes[0].plot(time_index, series, lw=1.5)
+    axes[0].set(title=series_title, xlabel="time", ylabel="y")
+    axes[0].set_xlim(0, N_TIME - 1)
+    axes[0].set_ylim(*PLOT_Y_LIM)
+
+    axes[1].scatter(embedding[:, 0], embedding[:, 1], s=16, alpha=0.8)
+    axes[1].set(
+        title=embedding_title,
+        xlabel="$y_t$",
+        ylabel=f"$y_{{t-{LAG}}}$",
+    )
+    axes[1].set_xlim(*PLOT_Y_LIM)
+    axes[1].set_ylim(*PLOT_Y_LIM)
+    axes[1].set_aspect("equal", adjustable="box")
+    plt.tight_layout()
+
+
 def plot_replicates(result: TopoPPCResult, rep_ids: tuple[int, ...] = (0, 1, 2)) -> None:
     """Plot the observed embedding next to a few posterior predictive embeddings."""
     fig, axes = plt.subplots(1, 1 + len(rep_ids), figsize=(14, 3.6), sharex=True, sharey=True)
@@ -554,7 +596,6 @@ def betti_curves_for_result(
     result: TopoPPCResult,
     dim: int = 1,
     n_grid: int = 200,
-    eps_max_quantile: float = 0.95,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return observed and replicated Betti curves for one homological dimension."""
     finite_deaths = []
@@ -562,7 +603,8 @@ def betti_curves_for_result(
         if dgm.size:
             finite_deaths.extend(dgm[np.isfinite(dgm[:, 1]), 1].tolist())
 
-    max_eps = float(np.quantile(finite_deaths, eps_max_quantile)) if finite_deaths else 1.0
+    # Include every finite death so the persistent H1 feature is never clipped.
+    max_eps = 1.05 * float(np.max(finite_deaths)) if finite_deaths else 1.0
     max_eps = max(max_eps, 1e-8)
     eps_grid = np.linspace(0.0, max_eps, n_grid)
 
@@ -654,7 +696,7 @@ colab:
   base_uri: https://localhost:8080/
   height: 1000
 id: 60775b71
-outputId: 2081d6d2-7bc1-4000-fc17-ff37ccdcef17
+outputId: 55effad7-fbc0-4dbf-a970-de4218b5e103
 ---
 def posterior_predictive_embedding_array(
     ppc,
@@ -676,6 +718,13 @@ bad_result = run_topoppc(
 )
 
 display_selected_tables(bad_result)
+plot_series_and_embedding(
+    replicated_embeddings_bad[0, :, 0],
+    replicated_embeddings_bad[0],
+    series_title="Gaussian posterior predictive first coordinate",
+    embedding_title="Gaussian posterior predictive delay embedding",
+    time_index=np.arange(LAG, N_TIME),
+)
 plot_replicates(bad_result)
 plot_metric_histogram(bad_result, "h1_max_persistence")
 plot_h1_diagram(bad_result, rep_id=0)
@@ -683,6 +732,8 @@ plot_betti_envelope(bad_result, dim=1)
 ```
 
 +++ {"id": "396414c1"}
+
+Because the Gaussian model is specified directly on the delay embedding, it does not generate a self-consistent scalar posterior predictive time series. In the two-panel comparison above, the left panel therefore plots the replicated $y_t$ coordinate in observation order, while the right panel shows the corresponding bivariate posterior predictive draw. Both panels use the same axis ranges as the observed-data figure.
 
 The scalar diagnostic below is the primary decision statistic, but the Betti-1 envelope is also useful as a visual posterior predictive check. It shows how the number of active one-dimensional holes evolves over the filtration scale, while the maximum-persistence statistic focuses on the single most persistent loop.
 
@@ -757,32 +808,38 @@ colab:
   base_uri: https://localhost:8080/
   height: 1000
 id: 1fe4ec88
-outputId: 96fdb8d8-d500-4e27-8ce5-c28cdfd8edce
+outputId: 6ffc95c0-f528-4adb-9924-5612e88d4f90
 ---
-def posterior_predictive_delay_embeddings(
+def posterior_predictive_timeseries_array(
     ppc,
     var_name: str = "y",
-    lag: int = LAG,
-    dim: int = DELAY_DIM,
     n_rep: int = 100,
     seed: int = RANDOM_SEED,
 ) -> np.ndarray:
-    """Delay-embed posterior predictive time series replicas."""
+    """Extract posterior predictive time-series replicas."""
     arr = ppc.posterior_predictive[var_name]
     arr = arr.stack(sample=("chain", "draw")).transpose("sample", "time").values
     rng = np.random.default_rng(seed)
     idx = rng.choice(arr.shape[0], size=min(n_rep, arr.shape[0]), replace=False)
-    return np.stack([delay_embedding(arr[i], lag=lag, dim=dim) for i in idx], axis=0)
+    return arr[idx]
 
 
-replicated_embeddings_good = posterior_predictive_delay_embeddings(
-    ppc_good, var_name="y", n_rep=100
+replicated_series_good = posterior_predictive_timeseries_array(ppc_good, var_name="y", n_rep=100)
+replicated_embeddings_good = np.stack(
+    [delay_embedding(y_rep, lag=LAG, dim=DELAY_DIM) for y_rep in replicated_series_good],
+    axis=0,
 )
 good_result = run_topoppc(
     "Fourier seasonal model", observed_embedding, replicated_embeddings_good, h1_threshold=0.5
 )
 
 display_selected_tables(good_result)
+plot_series_and_embedding(
+    replicated_series_good[0],
+    replicated_embeddings_good[0],
+    series_title="Fourier posterior predictive time series",
+    embedding_title="Fourier posterior predictive delay embedding",
+)
 plot_replicates(good_result)
 plot_metric_histogram(good_result, "h1_max_persistence")
 plot_h1_diagram(good_result, rep_id=0)
@@ -790,6 +847,8 @@ plot_betti_envelope(good_result, dim=1)
 ```
 
 +++ {"id": "8c08249d"}
+
+The two-panel posterior predictive visualization uses the same layout and axis ranges as the observed-data figure. The Fourier replicate preserves the periodic time-domain pattern, and its delay embedding retains the loop.
 
 After adding seasonal structure, the posterior predictive delay embeddings should now reproduce the observed loop. The `h1_max_persistence` value for the observed data should be typical under the revised model's posterior predictive distribution.
 
@@ -805,7 +864,7 @@ colab:
   base_uri: https://localhost:8080/
   height: 112
 id: 93fb872c
-outputId: 9dd78daa-99ff-4870-e481-b579aff03503
+outputId: 4681c014-bc47-4272-9509-f0fff14c959c
 ---
 def extract_metric(result: TopoPPCResult, metric: str) -> pd.Series:
     """Extract one discrepancy row and attach the model name."""
@@ -908,7 +967,7 @@ In practice, this notebook delegates the matrix-reduction algorithm to `ripser`.
 colab:
   base_uri: https://localhost:8080/
 id: EQd45YcPlenk
-outputId: 7108f9c5-b3eb-4a1a-fea4-9cde97c69289
+outputId: ef819d15-7a99-405c-e98c-8444bce03682
 ---
 %load_ext watermark
 %watermark -n -u -v -iv -w -p pytensor,xarray
